@@ -338,7 +338,6 @@ pub struct Net {
     id: usize,
     format: FormatTemplate,
     format_alt: Option<FormatTemplate>,
-    is_clicked: bool,
     output: TextWidget,
     ssid: Option<String>,
     max_ssid_width: usize,
@@ -354,8 +353,8 @@ pub struct Net {
     update_interval: Duration,
     device: NetworkDevice,
     auto_device: bool,
-    tx_buff: Vec<u64>,
-    rx_buff: Vec<u64>,
+    tx_buff: Vec<f64>,
+    rx_buff: Vec<f64>,
     tx_bytes: u64,
     rx_bytes: u64,
     use_bits: bool,
@@ -509,7 +508,6 @@ impl ConfigBlock for Net {
             format: FormatTemplate::from_string(&block_config.format)
                 .block_error("net", "Invalid format specified")?,
             format_alt,
-            is_clicked: false,
             output: TextWidget::new(id, shared_config.clone())
                 .with_icon(if wireless {
                     "net_wireless"
@@ -561,8 +559,8 @@ impl ConfigBlock for Net {
             graph_rx: String::new(),
             device,
             auto_device: block_config.device.is_none(),
-            rx_buff: vec![0; 10],
-            tx_buff: vec![0; 10],
+            rx_buff: vec![0.; 10],
+            tx_buff: vec![0.; 10],
             rx_bytes: init_rx_bytes,
             tx_bytes: init_tx_bytes,
             active: true,
@@ -674,7 +672,7 @@ impl Net {
 
         // Update the throughput/graph widgets if they are enabled
         let current_tx = self.device.tx_bytes()?;
-        let diff = current_tx.checked_sub(self.tx_bytes).unwrap_or(0);
+        let diff = current_tx.saturating_sub(self.tx_bytes);
         let tx_bytes = (diff as f64 / update_interval) as u64;
         self.tx_bytes = current_tx;
 
@@ -690,11 +688,11 @@ impl Net {
         );
 
         self.tx_buff.remove(0);
-        self.tx_buff.push(tx_bytes);
+        self.tx_buff.push(tx_bytes as f64);
         self.graph_tx = format_vec_to_bar_graph(&self.tx_buff, None, None);
 
         let current_rx = self.device.rx_bytes()?;
-        let diff = current_rx.checked_sub(self.rx_bytes).unwrap_or(0);
+        let diff = current_rx.saturating_sub(self.rx_bytes);
         let rx_bytes = (diff as f64 / update_interval) as u64;
         self.rx_bytes = current_rx;
 
@@ -710,7 +708,7 @@ impl Net {
         );
 
         self.rx_buff.remove(0);
-        self.rx_buff.push(rx_bytes);
+        self.rx_buff.push(rx_bytes as f64);
         self.graph_rx = format_vec_to_bar_graph(&self.rx_buff, None, None);
 
         Ok(())
@@ -780,14 +778,8 @@ impl Block for Net {
             "{graph_down}" => &self.graph_rx
         );
 
-        let format = if self.is_clicked {
-            // calling unwrap() here is OK, because is_clicked could be set only if format_alt is some
-            self.format_alt.as_ref().unwrap()
-        } else {
-            &self.format
-        };
-
-        self.output.set_text(format.render_static_str(&values)?);
+        self.output
+            .set_text(self.format.render_static_str(&values)?);
 
         Ok(Some(self.update_interval.into()))
     }
@@ -801,11 +793,10 @@ impl Block for Net {
     }
 
     fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if event.matches_id(self.id)
-            && event.button == MouseButton::Left
-            && self.format_alt.is_some()
-        {
-            self.is_clicked = !self.is_clicked;
+        if event.matches_id(self.id) && event.button == MouseButton::Left {
+            if let Some(ref mut format) = self.format_alt {
+                std::mem::swap(format, &mut self.format);
+            }
             self.update()?;
         }
         Ok(())
