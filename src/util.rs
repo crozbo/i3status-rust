@@ -10,11 +10,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use regex::Regex;
 use serde::de::DeserializeOwned;
-use serde_json::json;
 
 use crate::blocks::Block;
 use crate::config::SharedConfig;
 use crate::errors::*;
+
+use crate::widgets::i3block_data::I3BlockData;
 
 pub const USR_SHARE_PATH: &str = "/usr/share/i3status-rust";
 
@@ -191,44 +192,36 @@ pub fn print_blocks(blocks: &[Box<dyn Block>], config: &SharedConfig) -> Result<
         let mut rendered_widgets = widgets
             .iter()
             .map(|widget| {
-                let mut w_json: serde_json::Value = widget.get_rendered().to_owned();
+                let mut data = widget.get_data();
                 if alternator {
                     // Apply tint for all widgets of every second block
-                    *w_json.get_mut("background").unwrap() = json!(add_colors(
-                        w_json["background"].as_str(),
-                        config.theme.alternating_tint_bg.as_deref()
+                    data.background = add_colors(
+                        data.background.as_deref(),
+                        config.theme.alternating_tint_bg.as_deref(),
                     )
-                    .unwrap());
-                    *w_json.get_mut("color").unwrap() = json!(add_colors(
-                        w_json["color"].as_str(),
-                        config.theme.alternating_tint_fg.as_deref()
+                    .unwrap();
+                    data.color = add_colors(
+                        data.color.as_deref(),
+                        config.theme.alternating_tint_bg.as_deref(),
                     )
-                    .unwrap());
+                    .unwrap();
                 }
-                w_json
+                data
             })
-            .collect::<Vec<serde_json::Value>>();
+            .collect::<Vec<I3BlockData>>();
 
         alternator = !alternator;
 
         if config.theme.native_separators == Some(true) {
             // Re-add native separator on last widget for native theme
-            *rendered_widgets
-                .last_mut()
-                .unwrap()
-                .get_mut("separator")
-                .unwrap() = json!(null);
-            *rendered_widgets
-                .last_mut()
-                .unwrap()
-                .get_mut("separator_block_width")
-                .unwrap() = json!(null);
+            rendered_widgets.last_mut().unwrap().separator = None;
+            rendered_widgets.last_mut().unwrap().separator_block_width = None;
         }
 
         // Serialize and concatenate widgets
         let block_str = rendered_widgets
             .iter()
-            .map(|w| w.to_string())
+            .map(|w| w.render())
             .collect::<Vec<String>>()
             .join(",");
 
@@ -239,8 +232,11 @@ pub fn print_blocks(blocks: &[Box<dyn Block>], config: &SharedConfig) -> Result<
         }
 
         // The first widget's BG is used to get the FG color for the current separator
-        let first_bg = rendered_widgets.first().unwrap()["background"]
-            .as_str()
+        let first_bg = rendered_widgets
+            .first()
+            .unwrap()
+            .background
+            .clone()
             .internal_error("util", "couldn't get background color")?;
 
         let sep_fg = if config.theme.separator_fg == Some("auto".to_string()) {
@@ -256,23 +252,21 @@ pub fn print_blocks(blocks: &[Box<dyn Block>], config: &SharedConfig) -> Result<
             config.theme.separator_bg.clone()
         };
 
-        let separator = json!({
-            "full_text": config.theme.separator,
-            "separator": false,
-            "separator_block_width": 0,
-            "background": sep_bg,
-            "color": sep_fg,
-            "markup": "pango"
-        });
+        let mut separator = I3BlockData::default();
+        separator.full_text = config.theme.separator.clone();
+        separator.background = sep_bg;
+        separator.color = sep_fg;
 
-        rendered_blocks.push(format!("{},{}", separator.to_string(), block_str));
+        rendered_blocks.push(format!("{},{}", separator.render(), block_str));
 
         // The last widget's BG is used to get the BG color for the next separator
         last_bg = Some(
-            rendered_widgets.last().unwrap()["background"]
-                .as_str()
-                .internal_error("util", "couldn't get background color")?
-                .to_string(),
+            rendered_widgets
+                .last()
+                .unwrap()
+                .background
+                .clone()
+                .internal_error("util", "couldn't get background color")?,
         );
     }
 
@@ -385,100 +379,51 @@ pub fn format_vec_to_bar_graph(content: &[f64], min: Option<f64>, max: Option<f6
 }
 
 #[derive(Debug, Clone)]
-pub enum FormatTemplate {
-    Str(String, Option<Box<FormatTemplate>>),
-    Var(String, Option<Box<FormatTemplate>>),
+pub struct FormatTemplate {
+    tokens: Vec<FormatToken>,
+}
+
+#[derive(Debug, Clone)]
+enum FormatToken {
+    Text(String),
+    Var(String),
 }
 
 impl FormatTemplate {
-    pub fn from_string(s: &str) -> Result<FormatTemplate> {
-        let s_as_bytes = s.as_bytes();
-
+    pub fn from_string(s: &str) -> Result<Self> {
         //valid var tokens: {} containing any amount of alphanumericals
         let re = Regex::new(r"\{[a-zA-Z0-9_-]+?\}").internal_error("util", "invalid regex")?;
 
-        let mut token_vec: Vec<FormatTemplate> = vec![];
+        let mut tokens = vec![];
         let mut start: usize = 0;
 
         for re_match in re.find_iter(&s) {
             if re_match.start() != start {
-                let str_vec: Vec<u8> = (&s_as_bytes)[start..re_match.start()].to_vec();
-                token_vec.push(FormatTemplate::Str(
-                    String::from_utf8(str_vec)
-                        .internal_error("util", "failed to convert string from UTF8")?,
-                    None,
-                ));
+                tokens.push(FormatToken::Text(s[start..re_match.start()].to_string()));
             }
-            token_vec.push(FormatTemplate::Var(re_match.as_str().to_string(), None));
+            tokens.push(FormatToken::Var(re_match.as_str().to_string()));
             start = re_match.end();
         }
-        let str_vec: Vec<u8> = (&s_as_bytes)[start..].to_vec();
-        token_vec.push(FormatTemplate::Str(
-            String::from_utf8(str_vec)
-                .internal_error("util", "failed to convert string from UTF8")?,
-            None,
-        ));
-        let mut template: FormatTemplate = match token_vec.pop() {
-            Some(token) => token,
-            _ => FormatTemplate::Str("".to_string(), None),
-        };
-        while let Some(token) = token_vec.pop() {
-            template = match token {
-                FormatTemplate::Str(s, _) => FormatTemplate::Str(s, Some(Box::new(template))),
-                FormatTemplate::Var(s, _) => FormatTemplate::Var(s, Some(Box::new(template))),
-            }
-        }
-        Ok(template)
-    }
 
-    // TODO: Make this function tail-recursive for compiler optimization, also only use the version below, static_str
-    pub fn render<T: Display>(&self, vars: &HashMap<String, T>) -> String {
-        use self::FormatTemplate::*;
-        let mut rendered = String::new();
-        match *self {
-            Str(ref s, ref next) => {
-                rendered.push_str(s);
-                if let Some(ref next) = *next {
-                    rendered.push_str(&*next.render(vars));
-                };
-            }
-            Var(ref key, ref next) => {
-                rendered.push_str(&format!(
-                    "{}",
-                    vars.get(key)
-                        .unwrap_or_else(|| panic!("Unknown placeholder in format string: {}", key))
-                ));
-                if let Some(ref next) = *next {
-                    rendered.push_str(&*next.render(vars));
-                };
-            }
-        };
-        rendered
+        Ok(FormatTemplate { tokens })
     }
 
     pub fn render_static_str<T: Display>(&self, vars: &HashMap<&str, T>) -> Result<String> {
-        use self::FormatTemplate::*;
         let mut rendered = String::new();
-        match *self {
-            Str(ref s, ref next) => {
-                rendered.push_str(s);
-                if let Some(ref next) = *next {
-                    rendered.push_str(&*next.render_static_str(vars)?);
-                };
-            }
-            Var(ref key, ref next) => {
-                rendered.push_str(&format!(
+
+        for token in &self.tokens {
+            match token {
+                FormatToken::Text(text) => rendered.push_str(&text),
+                FormatToken::Var(ref key) => rendered.push_str(&format!(
                     "{}",
                     vars.get(&**key).internal_error(
                         "util",
-                        &format!("Unknown placeholder in format string: {}", key)
+                        &format!("Unknown placeholder in format string: {}", key),
                     )?
-                ));
-                if let Some(ref next) = *next {
-                    rendered.push_str(&*next.render_static_str(vars)?);
-                };
+                )),
             }
-        };
+        }
+
         Ok(rendered)
     }
 }
