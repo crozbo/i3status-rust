@@ -185,6 +185,7 @@ pub struct Backlight {
     device: BacklitDevice,
     step_width: u64,
     scrolling: Scrolling,
+    invert_icons: bool,
 }
 
 /// Configuration for the [`Backlight`](./struct.Backlight.html) block.
@@ -208,6 +209,9 @@ pub struct BacklightConfig {
     /// For devices with few discrete steps this should be 1.0 (linear).
     #[serde(default = "BacklightConfig::default_root_scaling")]
     pub root_scaling: f64,
+
+    #[serde(default = "BacklightConfig::default_invert_icons")]
+    pub invert_icons: bool,
 }
 
 impl BacklightConfig {
@@ -221,6 +225,10 @@ impl BacklightConfig {
 
     fn default_root_scaling() -> f64 {
         1f64
+    }
+
+    fn default_invert_icons() -> bool {
+        false
     }
 }
 
@@ -246,6 +254,7 @@ impl ConfigBlock for Backlight {
             step_width: block_config.step_width,
             scrolling: shared_config.scrolling,
             output: TextWidget::new(id, 0, shared_config),
+            invert_icons: block_config.invert_icons,
         };
 
         // Spin up a thread to watch for changes to the brightness file for the
@@ -285,15 +294,29 @@ impl ConfigBlock for Backlight {
 
 impl Block for Backlight {
     fn update(&mut self) -> Result<Option<Update>> {
-        let brightness = self.device.brightness()?;
+        let mut brightness = self.device.brightness()?;
         self.output.set_text(format!("{}%", brightness));
-        match brightness {
-            0..=19 => self.output.set_icon("backlight_empty"),
-            20..=39 => self.output.set_icon("backlight_partial1"),
-            40..=59 => self.output.set_icon("backlight_partial2"),
-            60..=79 => self.output.set_icon("backlight_partial3"),
-            _ => self.output.set_icon("backlight_full"),
+        if self.invert_icons {
+            brightness = 100 - brightness;
         }
+        self.output.set_icon(match brightness {
+            0..=6 => "backlight_empty",
+            7..=13 => "backlight_1",
+            14..=20 => "backlight_2",
+            21..=26 => "backlight_3",
+            27..=33 => "backlight_4",
+            34..=40 => "backlight_5",
+            41..=46 => "backlight_6",
+            47..=53 => "backlight_7",
+            54..=60 => "backlight_8",
+            61..=67 => "backlight_9",
+            68..=73 => "backlight_10",
+            74..=80 => "backlight_11",
+            81..=87 => "backlight_12",
+            88..=93 => "backlight_13",
+            _ => "backlight_full",
+        });
+
         Ok(None)
     }
 

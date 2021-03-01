@@ -15,6 +15,7 @@ pub mod ibus;
 pub mod kdeconnect;
 pub mod keyboard_layout;
 pub mod load;
+#[cfg(feature = "maildir")]
 pub mod maildir;
 pub mod memory;
 pub mod music;
@@ -55,6 +56,7 @@ use self::ibus::*;
 use self::kdeconnect::*;
 use self::keyboard_layout::*;
 use self::load::*;
+#[cfg(feature = "maildir")]
 use self::maildir::*;
 use self::memory::*;
 use self::music::*;
@@ -188,6 +190,9 @@ macro_rules! block {
         if let Some(ref overrides) = common_config.theme_overrides {
             $shared_config.theme_override(overrides)?;
         }
+        if let Some(overrides) = common_config.icons_format {
+            $shared_config.icons_format_override(overrides);
+        }
 
         // Extract block-specific config
         let block_config = <$block_type as ConfigBlock>::Config::deserialize($block_config)
@@ -243,6 +248,7 @@ pub fn create_block(
             update_request
         ),
         "load" => block!(Load, id, block_config, shared_config, update_request),
+        #[cfg(feature = "maildir")]
         "maildir" => block!(Maildir, id, block_config, shared_config, update_request),
         "memory" => block!(Memory, id, block_config, shared_config, update_request),
         "music" => block!(Music, id, block_config, shared_config, update_request),
